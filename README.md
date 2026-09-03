@@ -205,6 +205,13 @@ ARTEMIS was tested with two different Python3 environments:
         are of the same length and will try to superimpose them 
         with the perfect sequence alignment.
 
+    -chains, --chains [DEFAULT: OFF]
+        Semi-topological mode. For each candidate hit, ARTEMIS re-sorts
+        the reference and query structures by whole chains (never
+        re-ordering residues within a chain) before running the standard
+        Needleman-Wunsch alignment, allowing chain-level permutations
+        while keeping each chain's internal residue order fixed.
+
     -v, --verbose [DEFAULT: OFF]
         Verbose mode.
 
