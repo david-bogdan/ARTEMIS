@@ -182,7 +182,7 @@ def as_cif(text:'str') -> 'pd.DataFrame':
 
     for col in ['label_atom_id', 'auth_atom_id']:
         if col in atom_site.columns:
-            m = atom_site[col].str.startswith('"', "'")
+            m = atom_site[col].str.startswith('"')
             atom_site.loc[m, col] = atom_site[col][m].str[1:-1]
 
     if 'auth_atom_id' in atom_site.columns:
@@ -564,7 +564,7 @@ def add_atom_id_quote(atom_site:'pd.DataFrame')->'pd.DataFrame':
     for col in ['label_atom_id', 'auth_atom_id']:
         if col in atom_site.columns:
 
-            m = atom_site[col].str.startswith('"', "'")
+            m = atom_site[col].str.startswith('"')
 
             if (True ^ m).all():
                 atom_site[col] = '"' + atom_site[col] + '"'

@@ -24,8 +24,7 @@ KEEP    = 'last'
 
 def resrepr(atom_site:'pd.DataFrame', **kwargs:'list[str]') -> 'pd.Series':
 
-    def repr(res_atom_site:'pd.DataFrame'):
-        base  = res_atom_site['auth_comp_id'].iloc[0]
+    def repr(base, res_atom_site:'pd.DataFrame'):
 
         if base not in resr:
             return None
@@ -57,9 +56,13 @@ def resrepr(atom_site:'pd.DataFrame', **kwargs:'list[str]') -> 'pd.Series':
         i = [pd.Index(a.split()) for a in v]
         resr[k] = i
 
-    rep = (atom_site
-           .groupby(MCBI, sort=False)
-           .apply(repr)) # type: ignore
+    index  = []
+    values = []
+    for key, group in atom_site.groupby(MCBI, sort=False):
+        index.append(key)
+        values.append(repr(key[2], group))  # key[2] == auth_comp_id
+
+    rep = pd.Series(values, index=pd.MultiIndex.from_tuples(index, names=MCBI))
 
     return rep
 

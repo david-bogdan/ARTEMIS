@@ -473,6 +473,22 @@ parser.add_argument(
     '''
 )
 
+parser.add_argument(
+    '-chains', '--chains',
+    default=False,
+    action='store_true',
+    dest='chains',
+    required=False,
+    help='''
+    (default: chains=False)
+    Semi-topological mode. For each candidate hit, ARTEMIS re-sorts the
+    reference and query structures by whole chains (never re-ordering
+    residues within a chain) before running the standard backbone-dependent
+    Needleman-Wunsch alignment. This allows chain-level permutations while
+    keeping each chain's internal residue order fixed.
+    '''
+  )
+
 
 parser.add_argument(
     '-v', '--verbose',

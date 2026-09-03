@@ -57,7 +57,7 @@ except:
 
 HEAD  = '''
  ********************************************************************
- * ARTEMIS (Version 1.51)                                           *
+ * ARTEMIS (Version 1.7)                                            *
  * using ARTEM to Infer Sequence alignment                          *
  * Reference: 10.1093/nar/gkae758                                   *
  * Please email comments and suggestions to dav.bog.rom@gmail.com   *
@@ -175,6 +175,83 @@ def mutuallyClosestHit(hit:'dict') -> 'np.ndarray':
 
     return h
 
+def resolveChainOrder(rchain:'np.ndarray', qchain:'np.ndarray',
+                      ri:'np.ndarray'     , qi:'np.ndarray',
+                      maxiter:'int'=50) -> 'tuple[list, list]':
+    # Warm start: rank each side's chains by the mean of the counterpart's
+    # *real* residue index first, so a side with only one chain still
+    # contributes real signal (unlike grouping by table position alone).
+    n = len(rchain)
+
+    order = np.argsort(
+        pd.Series(qi).groupby(rchain).transform('mean').values, kind='stable'
+      )
+    order = order[np.argsort(
+        pd.Series(ri[order]).groupby(qchain[order]).transform('mean').values, kind='stable'
+    )]
+
+    # Then refine by alternately regrouping on table position until the
+    # arrangement stops changing - this is what catches cases where the
+    # two independent means above aren't yet mutually consistent.
+    prev = None
+    for _ in range(maxiter):
+        means = pd.Series(np.arange(n)).groupby(rchain[order]).transform('mean').values
+        order = order[np.argsort(means, kind='stable')]
+
+        means = pd.Series(np.arange(n)).groupby(qchain[order]).transform('mean').values
+        order = order[np.argsort(means, kind='stable')]
+
+        cur = tuple(order)
+        if cur == prev:
+            break
+        prev = cur
+
+    rOrder = list(dict.fromkeys(rchain[order]))
+    qOrder = list(dict.fromkeys(qchain[order]))
+
+    return rOrder, qOrder
+
+
+def chainPermutation(labels:'np.ndarray', chainOrder:'list') -> 'np.ndarray':
+
+    rank    = {c: i for i, c in enumerate(chainOrder)}
+    default = len(chainOrder)
+
+    key = np.array([rank.get(c, default) for c in labels])
+
+    return np.argsort(key, kind='stable')
+
+
+def reorderModel(model:'DataModel', chainOrder:'list') -> 'DataModel':
+
+    model = model.copy()
+
+    resi  = model.resi[chainPermutation(model.resi.get_level_values(1).values, chainOrder)]
+    seedi = model.seedi[chainPermutation(model.seedi.get_level_values(1).values, chainOrder)]
+
+    model.resi  = resi
+    model.seedi = seedi
+
+    s = model.resrepr1.loc[seedi]
+    s = s[s.notna()].values
+    model.s = s
+
+    m = model.resrepr2.loc[resi]
+    m = m[m.notna()]
+    model.i = m.index
+
+    if not m.empty:
+        m = np.vstack(m.values)
+        t = KDTree(m)
+    else:
+        m = np.array([])
+        t = None
+    model.m = m
+    model.t = t
+
+    return model
+    
+
 def impose(
     rm:'np.ndarray', qm:'np.ndarray',
     rL:'int', qL:'int',
@@ -250,7 +327,8 @@ def align(
     ri:'np.ndarray' , qi:'np.ndarray',
     r:'DataModel'   , q:'DataModel',
     shift:'float',
-    impose:'Callable'
+    impose:'Callable',
+    chains:'bool'=False
 ) -> 'tuple[dict, dict]':
 
     rind = r.i[ri]
@@ -313,9 +391,29 @@ def align(
     # scoremat -= min(scoremat[ri, qi]) - shift
 
     _shift   = max(dist[ri, qi]) + shift
-    scoremat = -(dist - _shift)
 
-    rAli, qAli = globalAlign(r.seq, q.seq, scoremat)
+    if chains:
+        rchain = r.i[ri].get_level_values(1).values
+        qchain = q.i[qi].get_level_values(1).values
+        rOrder, qOrder = resolveChainOrder(rchain, qchain, ri, qi)
+
+        rperm = chainPermutation(r.i.get_level_values(1).values, rOrder)
+        qperm = chainPermutation(q.i.get_level_values(1).values, qOrder)
+
+        rm_a  = rm[rperm]
+        qm_a  = qm[qperm]
+        rseq  = ''.join(r.seq[i] for i in rperm)
+        qseq  = ''.join(q.seq[i] for i in qperm)
+        distm = dist[np.ix_(rperm, qperm)]
+    else:
+        rOrder, qOrder = None, None
+        rm_a, qm_a = rm, qm
+        rseq, qseq = r.seq, q.seq
+        distm = dist
+    
+    scoremat = -(distm - _shift)
+
+    rAli, qAli = globalAlign(rseq, qseq, scoremat)
     h = hitFromAli(rAli, qAli)
 
     if h.size < 6:
@@ -334,9 +432,12 @@ def align(
     else:
         ri, qi = h
 
-        ans1 = impose(rm[ri], qm[qi])
+        ans1 = impose(rm_a[ri], qm_a[qi])
         ans1['rAli'] = rAli
         ans1['qAli'] = qAli
+
+    ans1['rOrder'] = rOrder
+    ans1['qOrder'] = qOrder
 
     return ans1, ans2
 
@@ -479,7 +580,7 @@ class ARTEMIS:
                  matchrange:'float'=3.5, threads:'int'=mp.cpu_count(),
                  toplargest:'int|None'=None, shift:'float|None'=None, 
                  stepdiv:'int|None'=None,
-                 superonly:'bool'=False,
+                 superonly:'bool'=False, chains:'bool'=False,
                  notmopt:'bool'=False,
                  ) -> 'None':
 
@@ -488,6 +589,7 @@ class ARTEMIS:
         self.matchrange = matchrange
         self.threads    = threads
         self.notmopt    = notmopt
+        self.chains     = chains
 
         if threads > 1:
             self.pool = mp.Pool(threads)
@@ -555,7 +657,8 @@ class ARTEMIS:
             align,
             r=self.r, q=self.q,
             shift=self.shift,
-            impose=self.impose
+            impose=self.impose,
+            chains=self.chains
         )
 
         self.ans1 = {}
@@ -782,6 +885,11 @@ class ARTEMIS:
             ali,
             key=lambda x: x[0]['rTM'] + x[0]['qTM']
         )[0]
+
+        if self.chains:
+            self.r = reorderModel(self.r, ans1['rOrder'])
+            self.q = reorderModel(self.q, ans1['qOrder'])
+        
         rAli, qAli = self.insertNaNGap(ans1['rAli'], ans1['qAli'])
         ans1['rAli'] = rAli
         ans1['qAli'] = qAli
@@ -1837,6 +1945,7 @@ if __name__ == '__main__':
                     shift       = args.shift,
                     stepdiv     = args.stepdiv,
                     superonly   = args.superonly,
+                    chains      = args.chains,
                     notmopt     = args.notmopt,
                 )
                 artemis.run()
@@ -1870,6 +1979,7 @@ if __name__ == '__main__':
                                     shift       = args.shift,
                                     stepdiv     = args.stepdiv,
                                     superonly   = args.superonly,
+                                    chains      = args.chains,
                                     notmopt     = args.notmopt,
                                 )
                                 artemis.run()
@@ -1898,6 +2008,7 @@ if __name__ == '__main__':
                                 shift       = args.shift,
                                 stepdiv     = args.stepdiv,
                                 superonly   = args.superonly,
+                                chains      = args.chains,
                                 notmopt     = args.notmopt,
                             )
                             artemis.run()
